@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 数据缓存（可重新拉取，文件太大）
+data/cache/*.csv
+
+# 交易日志（每次回测重新生成）
+trades.csv
+
+# Claude Code 内部文件
+.claude/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 操作系统
+.DS_Store
+Thumbs.db
