@@ -7,6 +7,47 @@ TIMEFRAME = '1h'
 # 初始资金 (USDT)
 INITIAL_CAPITAL = 10000
 
+# ============================================================
+# 生产配置（冻结区 — 不再调参/改信号/加策略）
+# ============================================================
+ALPHA_MODE = 'breakout_only'         # 只跑 Breakout Alpha（实验验证最优）
+PORTFOLIO_VOL_TARGET = 0.05          # 组合目标年化波动率 5%（生产档）
+BASE_MID = 1.0                       # 中波底仓乘数
+BASE_LOW = 0.0                       # 低波不参与
+BASE_HIGH = 0.0                      # 高波空仓
+NO_TRADE_ZONE = 0.02                 # |signal| < 此值且空仓 → 不开仓（信号≈0.5±0.03，0.02过滤纯噪声）
+USE_FUNDING = False                  # 默认关闭（实验验证负贡献）
+USE_CROSS_SECTIONAL = False          # 默认关闭（实验验证负贡献）
+
+# — 杠杆控制（组合层，不调信号层）—
+PORTFOLIO_LEVERAGE = 1.0             # 1.0x基准，扫描 1.5x/2.0x
+
+# — 执行层状态机 —
+MIN_WEIGHT_DELTA = 0.05              # trade buffer: 权重变化<5%不执行
+MAKER_TIMEOUT_BARS = 2               # maker挂单超时K线数→转taker
+MAX_RETRIES = 3                      # 单订单最大重试次数
+MAKER_SLIP_BPS = 0.00002             # maker成交滑点 0.2bps
+TAKER_SLIP_EXTRA_BPS = 0.0005        # taker额外滑点 5bps（在基础滑点之上）
+
+# — 真实成本模型 —
+FEE_RATE = 0.0004                    # 手续费 4bps
+SLIPPAGE_K = 1.0                     # 滑点系数: slippage = k * |delta| / ADV
+SLIPPAGE_MIN_BPS = 0.000005          # 最小滑点 0.05bps（大盘币）
+SLIPPAGE_MAX_BPS = 0.0010            # 最大滑点 10bps（小盘币熔断）
+
+# — 执行约束（容量上限）—
+MAX_POSITION_ADV_PCT = 0.05          # 单币持仓不超过日成交量 5%
+MAX_ORDER_ADV_PCT = 0.01             # 单次下单不超过日成交量 1%
+
+# — 资金费率（计入成本，不做alpha）—
+FUNDING_COST_ENABLED = True          # 持仓期间扣减funding rate
+
+# — 风控（资金级）—
+RISK_PORTFOLIO_STOP = -0.10          # 组合回撤 < -10% → 杠杆减半
+RISK_VOL_SHOCK = 5.0                 # realized_vol > target 5x → 清仓 (2x太紧，crypto天然波动大)
+RISK_CONSECUTIVE_LOSS = 5            # 连续亏损N笔 → 暂停交易
+RISK_PAUSE_BARS = 48                 # 暂停K线数（48h）
+
 # ---- Alpha 模型参数 ----
 # 标签：预测未来N根K线的方向
 FORWARD_BARS = 5
@@ -61,10 +102,9 @@ SIGNAL_CONFIRM = 0.1
 
 # 半连续执行参数（Band Trading）
 SIGNAL_CHANGE_THRESH = 0.1     # 信号变化超过此值才考虑调仓
-MIN_WEIGHT_DELTA = 0.05        # 权重变化超过此值才执行
 COOLING_BARS = 3               # 调仓冷却K线数（等级变化后冷却）
 SMOOTH_WEIGHT_EXEC = 0.8       # 执行层权重平滑
-NO_TRADE_ZONE = 0.15           # 信号绝对值<此值不开仓
+# NO_TRADE_ZONE 已在生产配置区定义 (0.02)，此处不再覆盖
 
 # 全局波动率过滤（用BTC波动作为市场开关）
 GLOBAL_VOL_FILTER = 1.3        # BTC vol_regime > 此值 → 全部空仓
@@ -90,10 +130,29 @@ ENTRY_DELAY_BARS = 2           # 升仓延迟确认（向上调仓需等N根K线
 PRICE_BREAKOUT_BARS = 6        # 突破确认的回看K线数
 MIN_HOLD_BARS_EXEC = 6         # 最小持仓K线数，防止1h反复进出
 
-# ---- 暴露管理 (exposure-based) ----
-BASE_EXPOSURE = 0.30           # 中波内基础仓位（始终持有）
+# ---- 暴露管理 (exposure-based) [兼容旧版] ----
+BASE_EXPOSURE = 0.30           # 中波内基础仓位
 SIGNAL_BOOST_MID = 0.10       # 中等信号阈值 → 暴露×0.6
 SIGNAL_BOOST_HIGH = 0.15      # 强信号阈值 → 暴露×1.0
+
+# ---- Regime分层底仓 (v2.1) ----
+BASE_LOW = 0.0                # 低波不参与 (风险预算实验结论)
+BASE_MID = 1.0                # 中波满仓 (风险放大)
+BASE_HIGH = 0.0               # 高波继续空仓
+
+# ---- Regime-Specific Vol Targeting (v2.1) ----
+TARGET_VOL_LOW = 0.03         # 低波目标波动率 (deprecated, 用 PORTFOLIO_VOL_TARGET)
+TARGET_VOL_MID = 0.08         # 中波目标波动率 (deprecated, 用 PORTFOLIO_VOL_TARGET)
+TARGET_VOL_HIGH = 0.00        # 高波不动
+
+# ---- Portfolio Layer (deprecated: 生产配置已迁移到文件顶部冻结区) ----
+# PORTFOLIO_VOL_TARGET 已在顶部定义
+
+# ---- Vol Targeting 通用参数 ----
+TARGET_VOL = 0.05             # 默认目标年化波动率
+VOL_LOOKBACK = 24             # 回看K线数 (1h → 24h)
+VOL_SCALE_CAP = 2.0           # 仓位放大上限
+VOL_FLOOR = 0.02              # 已实现波动率下限 (防止无仓位时 vol→0 导致杠杆→∞)
 
 # ---- 数据拉取 ----
 DATA_DIR = 'data/cache'

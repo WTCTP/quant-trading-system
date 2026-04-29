@@ -10,7 +10,9 @@ build/
 data/cache/*.csv
 
 # 交易日志（每次回测重新生成）
-trades.csv
+trades*.csv
+test_t.csv
+test_trades.csv
 
 # Claude Code 内部文件
 .claude/
