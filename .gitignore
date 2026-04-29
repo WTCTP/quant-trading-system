@@ -13,6 +13,8 @@ data/cache/*.csv
 trades*.csv
 test_t.csv
 test_trades.csv
+paper_records.csv
+paper_state.csv
 
 # Claude Code 内部文件
 .claude/

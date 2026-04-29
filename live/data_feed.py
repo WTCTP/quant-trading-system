@@ -33,6 +33,9 @@ class LiveDataFeed:
             if os.path.exists(cache_file):
                 df = pd.read_csv(cache_file, index_col=0, parse_dates=True)
                 if not df.empty:
+                    # 统一时区：CSV数据是UTC但无时区标记，添加UTC时区
+                    if df.index.tz is None:
+                        df.index = df.index.tz_localize('UTC')
                     self.df_dict[symbol] = df
                     print(f'  {symbol}: {len(df)} 根K线 [{df.index[0]} ~ {df.index[-1]}]')
                 else:

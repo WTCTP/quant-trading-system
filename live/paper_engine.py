@@ -97,7 +97,7 @@ class PaperTradingEngine(PortfolioBacktest):
 
         print('纸盘交易开始 (Ctrl+C 停止)')
         print(f'{"─" * 70}')
-        print(f'  {"时间":20s} {"资金":>10s} {"Regime":>8s} {"信号":>8s} {"订单":>6s}')
+        print(f'  {"时间":20s} {"资金":>10s} {"Regime":>8s} {"信号":>8s} {"状态"}')
         print(f'  {"─" * 70}')
 
         while True:
@@ -112,6 +112,7 @@ class PaperTradingEngine(PortfolioBacktest):
                 df_dict = data_feed.get_df_dict()
                 self.process_bar(data_feed.bar_count, new_time, df_dict)
                 self._print_live_status(new_time, df_dict)
+                self._save_records(df_dict, new_time)
 
             time.sleep(30)
 
@@ -123,6 +124,29 @@ class PaperTradingEngine(PortfolioBacktest):
 
         time_str = str(time)[:19] if hasattr(time, '__str__') else str(time)
 
+        sig_max = getattr(self, 'prev_signal_max', None)
+        sig_str = f'{sig_max:.3f}' if isinstance(sig_max, (int, float)) else str(sig_max)
+        pos_count = sum(1 for q in self.executor.qty.values() if q > 0)
+
         print(f'  {time_str:20s} ${total_value:>9,.0f} {self.current_regime:>8s} '
-              f'{self.prev_signal_max if hasattr(self, "prev_signal_max") else "-":>8s} '
-              f'{pending:>5d}')
+              f'{sig_str:>8s} 持仓{pos_count}币 订单{pending}')
+
+    def _save_records(self, df_dict, current_time):
+        """保存权益曲线和持仓状态到CSV，供dashboard读取"""
+        try:
+            records_df = pd.DataFrame(self.records)
+            records_df.to_csv('paper_records.csv', index=False)
+
+            prices = self.executor.get_prices(df_dict, current_time)
+            total_value = self.executor.portfolio_value(prices)
+            state = {
+                'time': current_time,
+                'capital': total_value,
+                'regime': self.current_regime,
+                'signal_max': float(getattr(self, 'prev_signal_max', 0) or 0),
+                'n_positions': sum(1 for q in self.executor.qty.values() if q > 0),
+                'n_pending': len(self.executor.pending_orders),
+            }
+            pd.DataFrame([state]).to_csv('paper_state.csv', index=False)
+        except Exception as e:
+            print(f'  [WARN] _save_records: {e}')

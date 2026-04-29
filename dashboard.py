@@ -78,6 +78,36 @@ def load_experiment_data():
     }
 
 
+def load_paper_data():
+    """加载纸盘交易实时数据（不缓存，每次刷新都读取）"""
+    records_df = pd.DataFrame()
+    trades_df = pd.DataFrame()
+    state = None
+
+    try:
+        records_df = pd.read_csv('paper_records.csv')
+        if not records_df.empty:
+            records_df['time'] = pd.to_datetime(records_df['time'])
+    except Exception:
+        pass
+
+    try:
+        trades_df = pd.read_csv('trades_paper.csv')
+        if not trades_df.empty:
+            trades_df['time'] = pd.to_datetime(trades_df['time'])
+    except Exception:
+        pass
+
+    try:
+        state_df = pd.read_csv('paper_state.csv')
+        if not state_df.empty:
+            state = state_df.iloc[-1].to_dict()
+    except Exception:
+        pass
+
+    return records_df, trades_df, state
+
+
 @st.cache_data(ttl=3600)
 def load_trades_csv():
     """尝试从已有CSV加载交易记录"""
@@ -131,8 +161,8 @@ def calc_metrics(engine):
 
 # ─── 图表组件 ──────────────────────────────────
 
-def plot_equity_curve(metrics, title="资金曲线"):
-    """资金曲线 + 回撤双轴图"""
+def plot_equity_curve(metrics, engine=None, title="资金曲线"):
+    """资金曲线 + 回撤双轴图 + 交易标记"""
     df = metrics['df']
 
     fig = make_subplots(
@@ -148,9 +178,51 @@ def plot_equity_curve(metrics, title="资金曲线"):
                    fill='tozeroy', fillcolor='rgba(0,180,216,0.1)'),
         row=1, col=1,
     )
-    # 初始资金线
     fig.add_hline(y=10000, line_dash="dash", line_color="gray",
                   opacity=0.5, row=1, col=1)
+
+    # 交易标记
+    if engine is not None:
+        trades_df = engine.get_trades_df()
+        if not trades_df.empty:
+            # 映射 trade time → 资金
+            time_to_cap = dict(zip(df['time'], df['capital']))
+            trades_df['cap_at_trade'] = trades_df['time'].map(time_to_cap)
+            trades_df = trades_df.dropna(subset=['cap_at_trade'])
+
+            # 买入绿色，卖出红色，强平黑色
+            color_map = {'maker': '#2ecc71', 'taker': '#00b4d8', 'force': '#e74c3c'}
+            for etype, sub in trades_df.groupby('type'):
+                marker_color = color_map.get(etype, '#888')
+                # marker 大小按交易额缩放
+                sizes = np.clip(abs(sub['delta_value'].values) / 200, 4, 14)
+                fig.add_trace(
+                    go.Scatter(
+                        x=sub['time'], y=sub['cap_at_trade'],
+                        mode='markers', name=f'{etype}',
+                        marker=dict(
+                            symbol='circle-open' if etype == 'maker' else 'circle',
+                            size=sizes, color=marker_color,
+                            line=dict(width=1.5, color=marker_color),
+                            opacity=0.8,
+                        ),
+                        text=[f'{etype}<br>¥{v:,.0f}<br>${c:,.0f}'
+                              for v, c in zip(sub['delta_value'], sub['cap_at_trade'])],
+                        hoverinfo='text',
+                    ),
+                    row=1, col=1,
+                )
+
+            # 图例：maker/taker/force
+            for etype, color in [('maker', '#2ecc71'), ('taker', '#00b4d8'), ('force', '#e74c3c')]:
+                count = len(trades_df[trades_df['type'] == etype])
+                if count > 0:
+                    fig.add_trace(
+                        go.Scatter(x=[None], y=[None], mode='markers',
+                                   name=f'{etype} ({count}笔)',
+                                   marker=dict(color=color, size=8)),
+                        row=1, col=1,
+                    )
 
     fig.add_trace(
         go.Scatter(x=df['time'], y=metrics['dd_series'] * 100, mode='lines',
@@ -160,7 +232,9 @@ def plot_equity_curve(metrics, title="资金曲线"):
     )
 
     fig.update_layout(
-        height=500, showlegend=False, margin=dict(l=0, r=0, t=30, b=0),
+        height=550, showlegend=True,
+        legend=dict(yanchor='top', y=0.99, xanchor='left', x=0.01, bgcolor='rgba(0,0,0,0)'),
+        margin=dict(l=0, r=0, t=30, b=0),
         hovermode='x unified',
     )
     fig.update_yaxes(title_text="USDT", row=1, col=1)
@@ -250,6 +324,136 @@ def plot_signal_buckets(engine):
     fig.update_xaxes(title_text='信号强度分桶 (0=最弱, 9=最强)')
     fig.update_yaxes(title_text='K线数', secondary_y=False)
     fig.update_yaxes(title_text='Sharpe / 收益%', secondary_y=True)
+    return fig
+
+
+def plot_trade_impact(engine, metrics):
+    """每笔交易后的资金变化：交易点资金 + 前后连接线"""
+    trades_df = engine.get_trades_df()
+    df = metrics['df']
+    if trades_df.empty or df.empty:
+        return go.Figure()
+
+    time_to_cap = dict(zip(df['time'], df['capital']))
+    trades_df['cap'] = trades_df['time'].map(time_to_cap)
+    trades_df = trades_df.dropna(subset=['cap'])
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        vertical_spacing=0.08, row_heights=[0.6, 0.4],
+                        subplot_titles=('每笔交易时的资金水平', '交易金额分布'))
+
+    # 买/卖分开
+    buys = trades_df[trades_df['delta_value'] > 0]
+    sells = trades_df[trades_df['delta_value'] < 0]
+
+    fig.add_trace(go.Scatter(
+        x=buys['time'], y=buys['cap'], mode='markers',
+        name=f'买入 ({len(buys)}笔)', marker=dict(symbol='triangle-up', size=8, color='#2ecc71'),
+        text=[f'买入 {s}<br>¥{v:,.0f}<br>资金 ${c:,.0f}'
+              for s, v, c in zip(buys['symbol'], buys['delta_value'], buys['cap'])],
+        hoverinfo='text',
+    ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=sells['time'], y=sells['cap'], mode='markers',
+        name=f'卖出 ({len(sells)}笔)', marker=dict(symbol='triangle-down', size=8, color='#e63946'),
+        text=[f'卖出 {s}<br>¥{v:,.0f}<br>资金 ${c:,.0f}'
+              for s, v, c in zip(sells['symbol'], sells['delta_value'], sells['cap'])],
+        hoverinfo='text',
+    ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=df['time'], y=df['capital'], mode='lines',
+        name='资金曲线', line=dict(color='#ccc', width=0.8), showlegend=False,
+    ), row=1, col=1)
+
+    # 交易金额直方图
+    all_vals = trades_df['delta_value'].abs()
+    fig.add_trace(go.Histogram(
+        x=all_vals, nbinsx=40, name='交易金额',
+        marker_color='#00b4d8', opacity=0.7,
+    ), row=2, col=1)
+
+    fig.update_layout(height=500, margin=dict(l=0, r=0, t=30, b=0),
+                      hovermode='x unified')
+    fig.update_xaxes(title_text='时间', row=1, col=1)
+    fig.update_yaxes(title_text='资金 (USDT)', row=1, col=1)
+    fig.update_xaxes(title_text='交易金额 (USDT)', row=2, col=1)
+    fig.update_yaxes(title_text='笔数', row=2, col=1)
+    return fig
+
+
+def plot_trade_forward_returns(engine, metrics, forward_bars=5):
+    """交易后N根K线的资金变化：评估交易时机质量"""
+    trades_df = engine.get_trades_df()
+    df = metrics['df']
+    if trades_df.empty or df.empty:
+        return go.Figure()
+
+    # 为每笔交易计算 forward return
+    df = df.set_index('time')
+    cap_series = df['capital']
+    forward_returns = []
+
+    for _, trade in trades_df.iterrows():
+        t = trade['time']
+        if t not in cap_series.index:
+            continue
+        idx = cap_series.index.get_loc(t)
+        if idx + forward_bars >= len(cap_series):
+            continue
+        fwd_cap = cap_series.iloc[idx + forward_bars]
+        cur_cap = cap_series.iloc[idx]
+        fwd_ret = (fwd_cap / cur_cap) - 1
+        forward_returns.append({
+            'time': t,
+            'symbol': trade['symbol'],
+            'type': trade['type'],
+            'delta_value': trade['delta_value'],
+            'fwd_return': fwd_ret * 100,
+            'side': '买' if trade['delta_value'] > 0 else '卖',
+        })
+
+    if not forward_returns:
+        return go.Figure()
+
+    fwd_df = pd.DataFrame(forward_returns)
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        vertical_spacing=0.08, row_heights=[0.5, 0.5],
+                        subplot_titles=(f'交易后{forward_bars}根K线收益 (%)', '累计前向收益'))
+
+    colors = {'买': '#2ecc71', '卖': '#e63946'}
+    for side, sub in fwd_df.groupby('side'):
+        fig.add_trace(go.Bar(
+            x=sub['time'], y=sub['fwd_return'],
+            name=side, marker_color=colors.get(side, '#888'),
+            text=[f'{side} {s}<br>{v:.2f}%' for s, v in zip(sub['symbol'], sub['fwd_return'])],
+            hoverinfo='text',
+        ), row=1, col=1)
+
+    # 累计前向收益
+    fwd_df = fwd_df.sort_values('time')
+    fwd_df['cum_fwd'] = fwd_df['fwd_return'].cumsum()
+    fig.add_trace(go.Scatter(
+        x=fwd_df['time'], y=fwd_df['cum_fwd'], mode='lines+markers',
+        name='累计前向收益%', line=dict(color='#ffd166', width=2),
+        marker=dict(size=4),
+    ), row=2, col=1)
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5, row=2, col=1)
+
+    pos_pct = (fwd_df['fwd_return'] > 0).mean() * 100
+    avg_fwd = fwd_df['fwd_return'].mean()
+    fig.add_annotation(
+        xref='paper', yref='paper', x=0.98, y=0.98,
+        text=f'正向率: {pos_pct:.0f}% | 均值: {avg_fwd:.2f}%',
+        showarrow=False, bgcolor='rgba(0,0,0,0.5)', font=dict(color='white', size=12),
+    )
+
+    fig.update_layout(height=450, margin=dict(l=0, r=0, t=30, b=0),
+                      hovermode='x unified')
+    fig.update_yaxes(title_text='前向收益 %', row=1, col=1)
+    fig.update_yaxes(title_text='累计 %', row=2, col=1)
     return fig
 
 
@@ -347,6 +551,86 @@ def plot_experiment_comparison(results):
     return fig
 
 
+def plot_paper_vs_backtest(paper_df, backtest_metrics, backtest_engine):
+    """纸盘权益曲线叠加回测基准对比"""
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        vertical_spacing=0.05, row_heights=[0.7, 0.3],
+        subplot_titles=("纸盘 vs 回测 — 资金曲线对比", "偏离 (纸盘 - 回测)"),
+    )
+
+    bt_df = backtest_metrics['df']
+
+    # 回测基准曲线
+    fig.add_trace(
+        go.Scatter(x=bt_df['time'], y=bt_df['capital'], mode='lines',
+                   name='回测基准', line=dict(color='#adb5bd', width=1.5, dash='dash')),
+        row=1, col=1,
+    )
+
+    if not paper_df.empty:
+        # 纸盘权益曲线
+        fig.add_trace(
+            go.Scatter(x=paper_df['time'], y=paper_df['capital'], mode='lines+markers',
+                       name='纸盘交易', line=dict(color='#00b4d8', width=2.5),
+                       marker=dict(size=4, color='#00b4d8')),
+            row=1, col=1,
+        )
+
+        # 纸盘交易标记
+        try:
+            paper_trades = pd.read_csv('trades_paper.csv')
+            if not paper_trades.empty:
+                paper_trades['time'] = pd.to_datetime(paper_trades['time'])
+                time_to_cap = dict(zip(paper_df['time'], paper_df['capital']))
+                paper_trades['cap_at_trade'] = paper_trades['time'].map(time_to_cap)
+                paper_trades = paper_trades.dropna(subset=['cap_at_trade'])
+
+                color_map = {'maker': '#2ecc71', 'taker': '#00b4d8', 'force': '#e74c3c'}
+                for etype, sub in paper_trades.groupby('type'):
+                    marker_color = color_map.get(etype, '#888')
+                    sizes = np.clip(abs(sub['delta_value'].values) / 200, 4, 12)
+                    fig.add_trace(
+                        go.Scatter(
+                            x=sub['time'], y=sub['cap_at_trade'],
+                            mode='markers', name=f'纸盘-{etype}',
+                            marker=dict(symbol='circle-open' if etype == 'maker' else 'circle',
+                                        size=sizes, color=marker_color,
+                                        line=dict(width=1.5, color=marker_color), opacity=0.8),
+                            text=[f'{etype}<br>{s}<br>${v:,.0f}'
+                                  for s, v in zip(sub['symbol'], abs(sub['delta_value']))],
+                            hoverinfo='text',
+                        ),
+                        row=1, col=1,
+                    )
+        except Exception:
+            pass
+
+        # 偏离曲线
+        bt_time_to_cap = dict(zip(bt_df['time'], bt_df['capital']))
+        paper_df['bt_cap'] = paper_df['time'].map(bt_time_to_cap)
+        paper_df = paper_df.dropna(subset=['bt_cap'])
+        paper_df['deviation'] = (paper_df['capital'] - paper_df['bt_cap']) / paper_df['bt_cap'] * 100
+        fig.add_trace(
+            go.Scatter(x=paper_df['time'], y=paper_df['deviation'], mode='lines',
+                       name='偏离 %', line=dict(color='#ffd166', width=1.5),
+                       fill='tozeroy', fillcolor='rgba(255,209,102,0.1)'),
+            row=2, col=1,
+        )
+        fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5, row=2, col=1)
+
+    fig.add_hline(y=10000, line_dash="dash", line_color="gray",
+                  opacity=0.5, row=1, col=1)
+    fig.update_layout(
+        height=550, showlegend=True,
+        legend=dict(yanchor='top', y=0.99, xanchor='left', x=0.01, bgcolor='rgba(0,0,0,0)'),
+        margin=dict(l=0, r=0, t=30, b=0), hovermode='x unified',
+    )
+    fig.update_yaxes(title_text="USDT", row=1, col=1)
+    fig.update_yaxes(title_text="%", row=2, col=1)
+    return fig
+
+
 # ═══════════════════════════════════════════════════
 # Main App
 # ═══════════════════════════════════════════════════
@@ -392,12 +676,12 @@ try:
         st.metric("最终资金", f"${metrics_main['final_capital']:,.0f}")
 
     # ═══ Tabs ═══
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📊 资金曲线", "🗺️ Regime分析", "📡 信号分析", "💹 交易明细", "⚖️ 实验对比"
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📊 资金曲线", "🗺️ Regime分析", "📡 信号分析", "💹 交易明细", "⚖️ 实验对比", "📡 纸盘交易"
     ])
 
     with tab1:
-        st.plotly_chart(plot_equity_curve(metrics_main), use_container_width=True)
+        st.plotly_chart(plot_equity_curve(metrics_main, eng_main), use_container_width=True)
 
         c1, c2 = st.columns(2)
         with c1:
@@ -475,7 +759,15 @@ try:
             st.plotly_chart(fig_stab, use_container_width=True)
 
     with tab4:
-        st.subheader("交易分布")
+        st.subheader("每笔交易时的资金水平")
+        st.caption("▲ 买入 | ▼ 卖出 | 点在资金曲线上，悬停看详情")
+        st.plotly_chart(plot_trade_impact(eng_main, metrics_main), use_container_width=True)
+
+        st.subheader(f"交易后 5 根K线的前向收益")
+        st.caption("正值=交易后资金上涨（时机好），负值=交易后资金下跌（时机差）")
+        st.plotly_chart(plot_trade_forward_returns(eng_main, metrics_main), use_container_width=True)
+
+        st.subheader("按币种分布")
         st.plotly_chart(plot_trade_distribution(eng_main), use_container_width=True)
 
         st.subheader("最近交易明细")
@@ -509,6 +801,74 @@ try:
             })
         comp_df = pd.DataFrame(rows)
         st.dataframe(comp_df, use_container_width=True, hide_index=True)
+
+    with tab6:
+        st.subheader("📡 纸盘交易 — 实时 vs 回测对比")
+
+        paper_df, paper_trades, paper_state = load_paper_data()
+
+        # 状态面板
+        if paper_state:
+            c1, c2, c3, c4, c5 = st.columns(5)
+            with c1:
+                st.metric("当前资金", f"${paper_state.get('capital', 0):,.0f}")
+            with c2:
+                st.metric("当前Regime", paper_state.get('regime', 'N/A'))
+            with c3:
+                st.metric("信号强度", f"{float(paper_state.get('signal_max', 0)):.3f}")
+            with c4:
+                st.metric("持仓币数", str(paper_state.get('n_positions', 0)))
+            with c5:
+                st.metric("待成交订单", str(paper_state.get('n_pending', 0)))
+            st.caption(f"最后更新: {paper_state.get('time', 'N/A')}")
+        else:
+            st.warning("暂无纸盘数据。请确保纸盘交易正在运行 (`python main_paper.py`)")
+            st.info("纸盘引擎每处理完一根K线后自动保存状态到 `paper_records.csv` 和 `paper_state.csv`")
+
+        # 对比图
+        if not paper_df.empty:
+            st.plotly_chart(
+                plot_paper_vs_backtest(paper_df, metrics_main, eng_main),
+                use_container_width=True,
+            )
+
+            # 纸盘统计
+            c1, c2, c3, c4 = st.columns(4)
+            paper_df['returns'] = paper_df['capital'].pct_change()
+            rets = paper_df['returns'].dropna()
+            if len(rets) > 1:
+                paper_ret = (paper_df['capital'].iloc[-1] / paper_df['capital'].iloc[0]) - 1
+                paper_vol = rets.std() * np.sqrt(365 * 24)
+                paper_sharpe = (rets.mean() / rets.std()) * np.sqrt(365 * 24) if rets.std() > 0 else 0
+                with c1:
+                    st.metric("纸盘收益", f"{paper_ret:.2%}")
+                with c2:
+                    st.metric("纸盘波动", f"{paper_vol:.2%}")
+                with c3:
+                    st.metric("纸盘Sharpe", f"{paper_sharpe:.2f}")
+                with c4:
+                    st.metric("纸盘交易", f"{len(paper_trades)} 笔")
+
+            # 交易明细
+            st.subheader("纸盘交易明细")
+            if not paper_trades.empty:
+                st.dataframe(
+                    paper_trades.tail(30).sort_values('time', ascending=False),
+                    use_container_width=True, hide_index=True,
+                )
+        else:
+            st.plotly_chart(
+                plot_equity_curve(metrics_main, eng_main, title="回测资金曲线 (纸盘暂无数据)"),
+                use_container_width=True,
+            )
+
+        # 手动刷新
+        c1, c2 = st.columns([1, 5])
+        with c1:
+            if st.button("🔄 刷新纸盘数据", use_container_width=True):
+                st.rerun()
+        with c2:
+            st.caption("纸盘数据由 `main_paper.py` 实时写入 `paper_records.csv` 和 `paper_state.csv`，刷新页面即可看到最新状态。")
 
 except Exception as e:
     st.error(f"加载失败: {e}")

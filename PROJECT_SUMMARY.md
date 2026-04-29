@@ -1,7 +1,7 @@
 # 量化交易系统 — 项目全流程总结
 
 > 最后更新：2026-04-30
-> 当前版本：v3.1 — V1 执行状态机 + 纸盘交易系统就绪
+> 当前版本：v3.2 — V1 执行状态机 + 纸盘交易 + Streamlit 可视化仪表盘
 
 ---
 
@@ -26,10 +26,11 @@ lianghua/
 ├── backtest/
 │   ├── __init__.py
 │   └── engine.py              # 回测引擎（~580行，process_bar()可复用）
-├── live/                      # ★ 新增：纸盘交易模块
+├── live/                      # 纸盘交易模块
 │   ├── __init__.py
 │   ├── data_feed.py           # 实时K线数据源（ccxt轮询 + bar闭合检测）
-│   └── paper_engine.py        # 纸盘引擎（继承PortfolioBacktest）
+│   └── paper_engine.py        # 纸盘引擎（继承PortfolioBacktest，含自动保存）
+├── dashboard.py               # ★ 新增：Streamlit 可视化仪表盘（6标签页）
 ├── data/
 │   ├── __init__.py
 │   ├── fetcher.py             # CCXT获取OHLCV + CSV缓存
@@ -293,16 +294,40 @@ pending → working → filled (maker 成交)
                                               │
                                     PortfolioExecutor (模拟成交)
                                               │
-                                    控制台输出 + CSV日志
+                                    ├── 控制台输出（实时状态）
+                                    ├── paper_records.csv（权益曲线，每bar保存）
+                                    ├── paper_state.csv（当前状态快照）
+                                    └── trades_paper.csv（交易记录，退出时保存）
+                                              │
+                                    Streamlit Dashboard（第6标签页读取）
 ```
 
 ### 7.2 启动方式
 
 ```bash
+# 终端1：纸盘交易引擎
 python main_paper.py
+
+# 终端2：可视化仪表盘
+streamlit run dashboard.py
 ```
 
-流程：加载 cache → 训练模型 → 等待新 bar → 处理 → 输出状态。Ctrl+C 安全退出。
+流程：加载 cache → 训练模型 → 等待新 bar → 处理 → 输出状态 → 自动保存 CSV。
+Ctrl+C 安全退出，交易记录保存到 `trades_paper.csv`。
+
+### 7.3 实时监控（Dashboard 集成）
+
+纸盘引擎每处理完一根 bar 自动保存：
+- **paper_records.csv** — 完整权益曲线（time, capital, regime, signal_max）
+- **paper_state.csv** — 当前状态快照（资金/Regime/信号/持仓/订单数）
+
+仪表盘第 6 标签页 "📡 纸盘交易" 读取上述文件，提供：
+- **状态面板**：当前资金、Regime、信号强度、持仓数、待成交订单
+- **对比曲线**：纸盘权益叠加回测基准 + 偏离子图
+- **交易标记**：maker/taker/force 分类标记在权益曲线上
+- **统计指标**：纸盘收益/波动/Sharpe/交易笔数
+- **交易明细**：最近 30 笔交易详情
+- **手动刷新**：点击按钮获取最新数据
 
 ---
 
