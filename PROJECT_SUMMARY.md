@@ -57,7 +57,7 @@ lianghua/
 
 ### 1.2 当前性能指标（v3.1 生产配置：2026-04-30）
 
-**PORTFOLIO_VOL_TARGET=0.05, PORTFOLIO_LEVERAGE=1.0x, Breakout-Only**:
+**PORTFOLIO_VOL_TARGET=0.10, PORTFOLIO_LEVERAGE=1.0x, Breakout-Only**:
 
 | 指标 | 值 |
 |------|-----|

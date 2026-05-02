@@ -14,7 +14,6 @@ from config import (
     VOL_REGIME_EMA_SPAN,
     SIGNAL_BOOST_MID, SIGNAL_BOOST_HIGH,
     BASE_LOW, BASE_MID, BASE_HIGH,
-    PORTFOLIO_VOL_TARGET,
 )
 from data.fetcher import DataFetcher
 from risk.manager import RiskManager
@@ -163,8 +162,9 @@ def main():
     print(f'训练窗口: {TRAIN_WINDOW}根 | 重训间隔: {RETRAIN_EVERY}根')
     print(f'Regime划分: low<{REGIME_LOW_THRESH} | mid∈[{REGIME_LOW_THRESH}~{REGIME_HIGH_THRESH}] | high>{REGIME_HIGH_THRESH}')
     print(f'手续费: {FEE_RATE:.2%} | 滑点: {SLIPPAGE_BPS:.2%}')
+    actual_vol_target = 0.10  # 实验实际使用的波动率目标（覆盖 config 默认值）
     print(f'信号分层: 基仓(≥{SIGNAL_BOOST_MID})→60% | 全仓(≥{SIGNAL_BOOST_HIGH})→100%')
-    print(f'组合目标波动率: {PORTFOLIO_VOL_TARGET:.0%}')
+    print(f'组合目标波动率: {actual_vol_target:.0%}')
 
     # 获取数据
     print_section('Step 1/3: 获取数据')
@@ -177,7 +177,7 @@ def main():
     print_section('Step 2/3: Breakout-Only (当前最优配置)')
     r_breakout = run_experiment(df_dict, 'Breakout-Only',
                                 base_mid=1.0,
-                                portfolio_vol_target=0.10)
+                                portfolio_vol_target=actual_vol_target)
     print_summary(r_breakout)
     print()
     print_regime_decomp(r_breakout)
@@ -187,12 +187,12 @@ def main():
     print_section('Step 3/3: 多Alpha对比')
     r_funding = run_experiment(df_dict, 'Breakout+Funding(10%)',
                                base_mid=1.0,
-                               portfolio_vol_target=0.10,
+                               portfolio_vol_target=actual_vol_target,
                                use_funding=True, funding_weight=0.10)
 
     r_crosssec = run_experiment(df_dict, 'Breakout+CrossSec(10%)',
                                 base_mid=1.0,
-                                portfolio_vol_target=0.10,
+                                portfolio_vol_target=actual_vol_target,
                                 use_cross_sectional=True, cross_sectional_weight=0.10)
 
     # 汇总对比
